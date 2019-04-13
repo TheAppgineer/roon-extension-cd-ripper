@@ -108,8 +108,8 @@ function makelayout(settings) {
                 title:   "User Name",
                 setting: "user"
             });
-        } else {
-            share.error = "Please specify an SMB share: //<ip><absolute path>";
+        } else if (settings.share.indexOf('/') != 0 && settings.share.indexOf('~') != 0) {
+            share.error = "Please specify an absolute path or SMB share";
             l.has_error = true;
         }
     }
@@ -592,13 +592,14 @@ function push_local(settings, cb) {
             overwrite: true,
             results:   false
         };
+        const share = settings.share.replace('~', require('os').homedir());
         let rel_path = '';
 
         if (settings.staging != staging.length) {
             rel_path = `${staging[settings.staging].Artist}/${staging[settings.staging].Title}`;
         }
 
-        rcopy(`${output_dir}/${rel_path}`, `${settings.share}/${rel_path}`, options, (error) => {
+        rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options, (error) => {
             if (error) {
                 console.error('Copy failed: ' + error);
                 svc_status.set_status('Copy failed: ' + error, true);
