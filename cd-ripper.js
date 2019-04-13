@@ -573,6 +573,8 @@ function whipper(user_args, cbs) {
 }
 
 function push(settings, cb) {
+    set_status(`Pushing "${staging[settings.staging].Artist} - ${staging[settings.staging].Title}"...`, false);
+
     if (settings.share.indexOf('//') == 0) {
         push_remote(settings, cb);
     } else {
