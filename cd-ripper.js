@@ -601,8 +601,17 @@ function push_local(settings, cb) {
 
         rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options, (error) => {
             if (error) {
-                console.error('Copy failed: ' + error);
-                svc_status.set_status('Copy failed: ' + error, true);
+                const split = error.toString().split(': ');
+
+                if (split.length > 1 && split[1] == 'ENOENT') {
+                    set_status("Album not found!\nStaging Area updated", true);
+
+                    // Remove pushed files from staging area
+                    remove(staging_index);
+                } else {
+                    console.error('Copy failed: ' + error);
+                    svc_status.set_status('Copy failed: ' + error, true);
+                }
             } else {
                 set_status("Successfully pushed!", false);
 
@@ -703,7 +712,7 @@ function remove(staging_index, cb) {
                 try {
                     fs.rmdirSync(`${output_dir}/${artist}`);
                 } catch (err) {
-                    if (err.code !== 'ENOTEMPTY') {
+                    if (err.code != 'ENOTEMPTY' && err.code != 'ENOENT') {
                         throw err;
                     }
                 }
