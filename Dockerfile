@@ -14,5 +14,4 @@ ENV PATH=$PATH:/whipper
 # Override entrypoint of base image
 ENTRYPOINT ["/usr/bin/env"]
 
-USER worker
 CMD [ "node", "/home/worker", "/output" ]
