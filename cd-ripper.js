@@ -42,7 +42,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.1.0',
+    display_version:     '0.1.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -369,8 +369,6 @@ function configure(cb) {
                         is_configured = false;
                         svc_status.set_status("Please insert a CD and restart drive configuration", true);
                         break;
-                    case 'WARNING':
-                        break;
                 }
             }
         },
@@ -385,6 +383,19 @@ function configure(cb) {
                         }
                     },
                     stderr: (data) => {
+                        const lines = data.toString().trim().split('\n');
+
+                        for (let i = 0; i < lines.length; i++) {
+                            const fields = lines[i].split(':');
+
+                            switch (fields[0]) {
+                                case 'ERROR':
+                                    is_configured = false;
+                                    svc_status.set_status("Drive offset can't be determined, " +
+                                                          "try another disc", true);
+                                    break;
+                            }
+                        }
                     },
                     close: (code) => {
                         if (code === 0 && is_configured === undefined) {
