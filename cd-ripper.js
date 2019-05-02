@@ -42,7 +42,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.1.1',
+    display_version:     '0.1.2',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -418,7 +418,7 @@ function rip(cb) {
     let track;
     let metadata;
 
-    svc_status.set_status("CD Ripping in preperation...", false);
+    svc_status.set_status("CD Ripping in preparation...", false);
 
     whipper(['--eject', 'never', 'cd', 'rip'], {
         stdout: (data) => {
@@ -641,9 +641,18 @@ function push_local(settings, cb) {
 
 function push_remote(settings, cb) {
     if (settings.share && settings.user && settings.staging !== undefined) {
-        const staging_index = settings.staging;
+        const staging_index = settings.staging;     // Get copy to use in callbacks, setting will get cleared
+        const share_fields = settings.share.split('/');
+        const no_of_slashes_till_path_slice = 4;    // Including slash of path slice
+        const share = share_fields.slice(0, no_of_slashes_till_path_slice).join('/');
         let command = `lcd "${output_dir}";`;
         let credentials = settings.user;
+
+        if (share_fields.length > no_of_slashes_till_path_slice) {
+            const path = share_fields.slice(no_of_slashes_till_path_slice).join('/');
+
+            command += `cd "${path}";`;
+        }
 
         if (settings.staging != staging.length) {
             const artist = staging[settings.staging].Artist;
@@ -659,9 +668,10 @@ function push_remote(settings, cb) {
         }
 
         command += 'prompt;recurse;mput *.flac;mput *.log';
+        console.log(share, command);
 
         // Use '-E' option to get the expected stdout/stderr behavior
-        const args = ['-E', '-U', credentials, settings.share, '-c', command];
+        const args = ['-E', '-U', credentials, share, '-c', command];
         const child = require('child_process').spawn('smbclient', args);
 
         child.stdout.on('data', (data) => {
