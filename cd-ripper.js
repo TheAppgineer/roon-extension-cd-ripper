@@ -36,7 +36,7 @@ var core = undefined;
 var has_drive;
 var drive_props;
 var is_configured;
-var staging = [];
+var staging = {};
 var current_action = ACTION_IDLE;
 
 var roon = new RoonApi({
@@ -71,7 +71,7 @@ var svc_settings = new RoonApiSettings(roon, {
             delete l.values.action;
             delete l.values.password;
             delete l.values.staging_action;
-            delete l.values.staging;
+            delete l.values.staging_key;
 
             rip_settings = l.values;
             svc_settings.update_settings(l);
@@ -145,7 +145,7 @@ function makelayout(settings) {
             action.values.push({ title: "Scan Drive", value: ACTION_SCAN });
         }
 
-        if (staging.length) {
+        if (Object.keys(staging).length) {
             action.values.push({ title: "Manage Staging Area", value: ACTION_STAGING });
         }
 
@@ -167,24 +167,23 @@ function makelayout(settings) {
             }
 
             // No push from staging area
-            settings.staging = undefined;
+            settings.staging_key = undefined;
         } else if (settings.action == ACTION_STAGING) {
             // Mode 2: Perform a staging area related action
             let staging_area = {
                 type:    "dropdown",
                 title:   "Staging Area",
                 values:  [{ title: "(select album)", value: undefined }],
-                setting: "staging"
+                setting: "staging_key"
             };
 
-            for (let i = 0; i < staging.length; i++) {
-                staging_area.values.push({ title: `${staging[i].Artist} - ${staging[i].Title}`, value: i });
+            for (const key in staging) {
+                staging_area.values.push({ title: `${staging[key].Artist} - ${key}`, value: key });
             }
-            //staging_area.values.push({ title: 'All', value: staging.length });
 
             l.layout.push(staging_area);
 
-            if (settings.staging !== undefined) {
+            if (settings.staging_key !== undefined) {
                 l.layout.push({
                     type:    "dropdown",
                     title:   "Staging Action",
@@ -214,12 +213,12 @@ function makelayout(settings) {
                     }
                 }
 
-                if (settings.staging < staging.length) {
+                if (settings.staging_key) {
                     l.layout.push({
                         type: "group",
-                        title: `${staging[settings.staging].Artist.toUpperCase()} - ` +
-                               `${staging[settings.staging].Title.toUpperCase()}\n` +
-                               staging[settings.staging].tracks.join('\n'),
+                        title: `${staging[settings.staging_key].Artist.toUpperCase()} - ` +
+                               `${staging[settings.staging_key].Title.toUpperCase()}\n` +
+                               staging[settings.staging_key].tracks.join('\n'),
                         items: []
                     });
                 }
@@ -253,9 +252,9 @@ function perform_action(settings) {
             // Keep the password for later
             let password = settings.password;
 
-            rip((staging_index) => {
-                if (staging_index != undefined) {
-                    settings.staging = staging_index;
+            rip((staging_key) => {
+                if (staging_key != undefined) {
+                    settings.staging_key = staging_key;
                     settings.password = password;
                     push(settings, set_idle);
                 } else {
@@ -266,7 +265,7 @@ function perform_action(settings) {
         case ACTION_STAGING:
             switch (settings.staging_action) {
                 case STAGING_PUSH:
-                    if (settings.staging != undefined) {
+                    if (settings.staging_key != undefined) {
                         push(settings, set_idle);
                     } else {
                         set_idle();
@@ -275,10 +274,10 @@ function perform_action(settings) {
                 case STAGING_PUSH_MULTI:
                     break;
                 case STAGING_UNSTAGE:
-                    unstage(settings.staging, set_idle);
+                    unstage(settings.staging_key, set_idle);
                     break;
                 case STAGING_REMOVE:
-                    remove(settings.staging, set_idle);
+                    remove(settings.staging_key, set_idle);
                     break;
             }
             break;
@@ -489,18 +488,19 @@ function rip(cb) {
             }
         },
         close: (code) => {
-            let staging_index;
+            let staging_key;
 
             if (code === 0) {
                 set_status("Successfully ripped!", false, metadata);
 
                 if (metadata) {
-                    staging_index = staging.length;
-                    staging.push(metadata);
+                    staging_key = metadata.Title;
+
+                    staging[staging_key] = metadata;
                 }
             }
 
-            cb && cb(staging_index);
+            cb && cb(staging_key);
         }
     });
 }
@@ -584,7 +584,8 @@ function whipper(user_args, cbs) {
 }
 
 function push(settings, cb) {
-    set_status(`Pushing "${staging[settings.staging].Artist} - ${staging[settings.staging].Title}"...`, false);
+    set_status(`Pushing "${staging[settings.staging_key].Artist} - ${staging[settings.staging_key].Title}"...`,
+               false);
 
     if (settings.share.indexOf('//') == 0) {
         push_remote(settings, cb);
@@ -594,9 +595,10 @@ function push(settings, cb) {
 }
 
 function push_local(settings, cb) {
-    if (settings.share && settings.staging !== undefined) {
+    const staging_key = settings.staging_key;     // Get copy to use in callbacks, setting will get cleared
+
+    if (settings.share && staging_key !== undefined) {
         const rcopy = require('recursive-copy');
-        const staging_index = settings.staging;
         const options = {
             filter: [
                 '**/*.flac',
@@ -608,8 +610,8 @@ function push_local(settings, cb) {
         const share = settings.share.replace('~', require('os').homedir());
         let rel_path = '';
 
-        if (settings.staging != staging.length) {
-            rel_path = `${staging[settings.staging].Artist}/${staging[settings.staging].Title}`;
+        if (staging_key) {
+            rel_path = `${staging[staging_key].Artist}/${staging[staging_key].Title}`;
         }
 
         rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options, (error) => {
@@ -620,7 +622,7 @@ function push_local(settings, cb) {
                     set_status("Album not found!\nStaging Area updated", true);
 
                     // Remove pushed files from staging area
-                    remove(staging_index);
+                    remove(staging_key);
                 } else {
                     console.error('Copy failed: ' + error);
                     svc_status.set_status('Copy failed: ' + error, true);
@@ -629,7 +631,7 @@ function push_local(settings, cb) {
                 set_status("Successfully pushed!", false);
 
                 // Remove pushed files from staging area
-                remove(staging_index);
+                remove(staging_key);
             }
 
             cb && cb();
@@ -640,8 +642,9 @@ function push_local(settings, cb) {
 }
 
 function push_remote(settings, cb) {
-    if (settings.share && settings.user && settings.staging !== undefined) {
-        const staging_index = settings.staging;     // Get copy to use in callbacks, setting will get cleared
+    const staging_key = settings.staging_key;     // Get copy to use in callbacks, setting will get cleared
+
+    if (settings.share && settings.user && staging_key !== undefined) {
         const share_fields = settings.share.split('/');
         const no_of_slashes_till_path_slice = 4;    // Including slash of path slice
         const share = share_fields.slice(0, no_of_slashes_till_path_slice).join('/');
@@ -654,9 +657,9 @@ function push_remote(settings, cb) {
             command += `cd "${path}";`;
         }
 
-        if (settings.staging != staging.length) {
-            const artist = staging[settings.staging].Artist;
-            const album = staging[settings.staging].Title;
+        if (staging_key) {
+            const artist = staging[staging_key].Artist;
+            const album = staging[staging_key].Title;
 
             command += `lcd "${artist}/${album}";` +
                        `mkdir "${artist}";cd "${artist}";` +
@@ -695,7 +698,7 @@ function push_remote(settings, cb) {
                 set_status("Successfully pushed!", false);
 
                 // Remove pushed files from staging area
-                remove(staging_index);
+                remove(staging_key);
             }
 
             cb && cb();
@@ -708,43 +711,38 @@ function push_remote(settings, cb) {
 function push_multi(settings, cb) {
 }
 
-function unstage(staging_index, cb) {
-    if (staging_index != undefined) {
-        staging.splice(staging_index, 1);
+function unstage(staging_key, cb) {
+    if (staging_key != undefined) {
+        delete staging[staging_key];
     }
 
     cb && cb();
 }
 
-function remove(staging_index, cb) {
-    if (staging_index != undefined) {
+function remove(staging_key, cb) {
+    if (staging_key != undefined) {
         const rimraf = require("rimraf");
         const fs = require("fs");
+        const artist = staging[staging_key].Artist;
+        const album = staging[staging_key].Title;
         let path = output_dir;
 
-        if (staging_index < staging.length) {
-            const artist = staging[staging_index].Artist;
-            const album = staging[staging_index].Title;
+        path += `/${artist}/${album}`;
+        console.log(`Deleting path: ${path}`);
 
-            path += `/${artist}/${album}`;
-            console.log(`Deleting path: ${path}`);
-
-            // Delete the files
-            rimraf(path, () => {
-                // Remove artist directory if empty now
-                try {
-                    fs.rmdirSync(`${output_dir}/${artist}`);
-                } catch (err) {
-                    if (err.code != 'ENOTEMPTY' && err.code != 'ENOENT') {
-                        throw err;
-                    }
+        // Delete the files
+        rimraf(path, () => {
+            // Remove artist directory if empty now
+            try {
+                fs.rmdirSync(`${output_dir}/${artist}`);
+            } catch (err) {
+                if (err.code != 'ENOTEMPTY' && err.code != 'ENOENT') {
+                    throw err;
                 }
+            }
 
-                unstage(staging_index, cb);
-            });
-        } else {
-            // TODO: Remove all
-        }
+            unstage(staging_key, cb);
+        });
     }
 }
 
@@ -755,7 +753,18 @@ function init() {
     staging = read_JSON_file_sync(output_dir + '/staging.json');
 
     if (staging === undefined) {
-        staging = [];
+        staging = {};
+    } else if (staging instanceof Array) {
+        // Convert from the old Array layout to the Object layout
+        let staging_object = {};
+
+        for (let i = 0; i < staging.length; i++) {
+            const key = staging[i].Title;
+
+            staging_object[key] = staging[i];
+        }
+
+        staging = staging_object;
     }
 
     roon.start_discovery();
