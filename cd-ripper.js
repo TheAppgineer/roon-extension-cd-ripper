@@ -22,9 +22,10 @@ const ACTION_RIP_PUSH = 4;
 const ACTION_STAGING = 5;
 
 const STAGING_PUSH = 1;
-const STAGING_PUSH_MULTI = 2;
-const STAGING_UNSTAGE = 3;
-const STAGING_REMOVE = 4;
+const STAGING_CONVERT_MULTI = 2;
+const STAGING_APPEND_MULTI = 3;
+const STAGING_UNSTAGE = 4;
+const STAGING_REMOVE = 5;
 
 const output_dir = (process.argv[2] ? process.argv[2] : process.cwd() + '/output');
 
@@ -42,7 +43,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.1.2',
+    display_version:     '0.2.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -68,7 +69,11 @@ var svc_settings = new RoonApiSettings(roon, {
 
         if (!isdryrun && !l.has_error) {
             perform_action(l.values);
-            delete l.values.action;
+            if (l.values.action != ACTION_STAGING ||
+                (l.values.staging_action != STAGING_CONVERT_MULTI &&
+                 l.values.staging_action != STAGING_APPEND_MULTI)) {
+                delete l.values.action;
+            }
             delete l.values.password;
             delete l.values.staging_action;
             delete l.values.staging_key;
@@ -77,7 +82,7 @@ var svc_settings = new RoonApiSettings(roon, {
             svc_settings.update_settings(l);
             roon.save_config("settings", rip_settings);
         }
-    },
+    }
 });
 
 var svc_status = new RoonApiStatus(roon);
@@ -183,45 +188,86 @@ function makelayout(settings) {
 
             l.layout.push(staging_area);
 
-            if (settings.staging_key !== undefined) {
-                l.layout.push({
+            if (settings.staging_key != undefined && staging[settings.staging_key]) {
+                let staging_actions = {
                     type:    "dropdown",
                     title:   "Staging Action",
                     values:  [
                         { title: "(select staging action)", value: undefined },
                         { title: "Push",                    value: STAGING_PUSH },
-                        //{ title: "Push as Multi Disk",      value: STAGING_PUSH_MULTI },
                         //{ title: "Unstage",                 value: STAGING_UNSTAGE },
                         { title: "Remove",                  value: STAGING_REMOVE }
                     ],
                     setting: "staging_action"
-                });
+                };
 
-                if (settings.action == ACTION_STAGING &&
-                    (settings.staging_action == STAGING_PUSH || settings.staging_action == STAGING_PUSH_MULTI)) {
-                    if (settings.share) {
-                        if (settings.share.indexOf('//') == 0) {
-                            // SMB share
-                            if (settings.user) {
-                                l.layout.push(password);
-                            } else {
-                                l.layout.push(setup_share);
-                            }
+                if (Object.keys(staging).length > 1) {
+                    if (settings.multi_disk_count) {
+                        if (staging[settings.staging_key].Title != settings.multi_disk_title) {
+                            staging_actions.values.splice(1, 0, {
+                                title: `Append to "${settings.multi_disk_title}"`,
+                                value: STAGING_APPEND_MULTI
+                            });
                         }
                     } else {
-                        l.layout.push(setup_share);
+                        staging_actions.values.splice(1, 0, {
+                            title: "Convert to Multi Disk",
+                            value: STAGING_CONVERT_MULTI
+                        });
                     }
                 }
 
-                if (settings.staging_key) {
-                    l.layout.push({
-                        type: "group",
-                        title: `${staging[settings.staging_key].Artist.toUpperCase()} - ` +
-                               `${staging[settings.staging_key].Title.toUpperCase()}\n` +
-                               staging[settings.staging_key].tracks.join('\n'),
-                        items: []
-                    });
+                l.layout.push(staging_actions);
+
+                if (settings.action == ACTION_STAGING) {
+                    switch (settings.staging_action) {
+                        case STAGING_PUSH:
+                            if (settings.share) {
+                                if (settings.share.indexOf('//') == 0) {
+                                    // SMB share
+                                    if (settings.user) {
+                                        l.layout.push(password);
+                                    } else {
+                                        l.layout.push(setup_share);
+                                    }
+                                }
+                            } else {
+                                l.layout.push(setup_share);
+                            }
+                            break;
+                        case STAGING_CONVERT_MULTI:
+                            const title = {
+                                type:    "string",
+                                title:   "Multi Disk Title",
+                                setting: "multi_disk_title"
+                            };
+
+                            if (settings.staging_key) {
+                                if (settings.multi_disk_title === undefined) {
+                                    settings.multi_disk_title = staging[settings.staging_key].Title;
+                                }
+
+                                l.layout.push(title);
+
+                                if (settings.multi_disk_title == staging[settings.staging_key].Title) {
+                                    title.error = 'Multi Disk Title should differ from original title';
+                                    l.has_error = true;
+                                }
+                            }
+
+                            break;
+                        default:
+                            break;
+                    }
                 }
+
+                l.layout.push({
+                    type: "group",
+                    title: `${staging[settings.staging_key].Artist.toUpperCase()} - ` +
+                            `${staging[settings.staging_key].Title.toUpperCase()}\n` +
+                            staging[settings.staging_key].tracks.join('\n'),
+                    items: []
+                });
             }
         }
     } else {
@@ -271,13 +317,22 @@ function perform_action(settings) {
                         set_idle();
                     }
                     break;
-                case STAGING_PUSH_MULTI:
+                case STAGING_CONVERT_MULTI:
+                    settings.multi_disk_count = 1;
+                    convert(settings, set_idle);
+                    break;
+                case STAGING_APPEND_MULTI:
+                    settings.multi_disk_count++;
+                    append(settings, set_idle);
                     break;
                 case STAGING_UNSTAGE:
                     unstage(settings.staging_key, set_idle);
                     break;
                 case STAGING_REMOVE:
                     remove(settings.staging_key, set_idle);
+                    break;
+                default:
+                    set_idle();
                     break;
             }
             break;
@@ -587,6 +642,11 @@ function push(settings, cb) {
     set_status(`Pushing "${staging[settings.staging_key].Artist} - ${staging[settings.staging_key].Title}"...`,
                false);
 
+    if (settings.staging_key == settings.multi_disk_title) {
+        delete settings.multi_disk_title;
+        delete settings.multi_disk_count;
+    }
+
     if (settings.share.indexOf('//') == 0) {
         push_remote(settings, cb);
     } else {
@@ -604,8 +664,9 @@ function push_local(settings, cb) {
                 '**/*.flac',
                 '**/*.log'
             ],
-            overwrite: true,
-            results:   false
+            overwrite:   true,
+            results:     false,
+            concurrency: 4
         };
         const share = settings.share.replace('~', require('os').homedir());
         let rel_path = '';
@@ -614,7 +675,26 @@ function push_local(settings, cb) {
             rel_path = `${staging[staging_key].Artist}/${staging[staging_key].Title}`;
         }
 
-        rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options, (error) => {
+        const copy = rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options);
+
+        copy.on(rcopy.events.COPY_FILE_START, (operation) => {
+            set_status('Copying file: ' + operation.src + '...');
+        });
+
+        copy.on(rcopy.events.COPY_FILE_COMPLETE, (operation) => {
+            set_status('Copied file: ' + operation.src);
+        });
+
+        copy.on(rcopy.events.COMPLETE, () => {
+            set_status("Successfully pushed!", false);
+
+            // Remove pushed files from staging area
+            remove(staging_key);
+
+            cb && cb();
+        });
+
+        copy.on(rcopy.events.ERROR, (error) => {
             if (error) {
                 const split = error.toString().split(': ');
 
@@ -627,11 +707,6 @@ function push_local(settings, cb) {
                     console.error('Copy failed: ' + error);
                     svc_status.set_status('Copy failed: ' + error, true);
                 }
-            } else {
-                set_status("Successfully pushed!", false);
-
-                // Remove pushed files from staging area
-                remove(staging_key);
             }
 
             cb && cb();
@@ -708,7 +783,89 @@ function push_remote(settings, cb) {
     }
 }
 
-function push_multi(settings, cb) {
+function convert(settings, cb) {
+    let multi_disk = {};
+
+    // Copy fields
+    for (const key in staging[settings.staging_key]) {
+        if (key != 'tracks' && key != 'Duration') {
+            multi_disk[key] = staging[settings.staging_key][key];
+        }
+    }
+
+    // Update fields
+    multi_disk.Title = settings.multi_disk_title;
+    multi_disk.tracks = [];
+    staging[multi_disk.Title] = multi_disk;
+
+    move_to_multi_disk(settings, multi_disk, cb);
+}
+
+function append(settings, cb) {
+    move_to_multi_disk(settings, staging[settings.multi_disk_title], cb);
+}
+
+function move_to_multi_disk(settings, multi_disk, cb) {
+    const mkdirp = require('mkdirp');
+    const fs = require('fs');
+    const staging_key = settings.staging_key;
+    const artist_dir = `${output_dir}/${multi_disk.Artist}`;
+
+    // Copy files
+    mkdirp(`${artist_dir}/${multi_disk.Title}`, (err, made) => {
+        if (!err) {
+            const src_dir = `${artist_dir}/${staging[staging_key].Title}/`;
+            const dest_dir = `${artist_dir}/${multi_disk.Title}/`;
+
+            move_track(staging[staging_key].tracks,
+                       settings.multi_disk_count,
+                       0,
+                       src_dir,
+                       dest_dir,
+                       (err, track_name, done) => {
+                if (err) {
+                    svc_status.set_status(err, true);
+
+                    cb && cb();
+                } else {
+                    if (track_name) {
+                        multi_disk.tracks.push(track_name);
+                    }
+
+                    if (done) {
+                        console.log(multi_disk);
+
+                        // Move log file
+                        const file = `${multi_disk.Artist} - ${staging[staging_key].Title}.log`;
+                        fs.rename(src_dir + file, dest_dir + file, (err) => {
+                            remove(staging_key, cb);
+                        });
+                    }
+                }
+            });
+        } else {
+            cb && cb();
+        }
+    });
+}
+
+function move_track(tracks, disk_index, track_index, src_dir, dest_dir, cb) {
+    const fs = require('fs');
+    const src_file = `${tracks[track_index].split('.flac')[0]}.flac`;
+    const track_name = `0${disk_index}-${tracks[track_index]}`;
+    const dest_file = `${track_name.split('.flac')[0]}.flac`;
+
+    fs.rename(src_dir + src_file, dest_dir + dest_file, (err) => {
+        if (track_index + 1 === tracks.length) {
+            cb(err, track_name, true);
+        } else {
+            cb(err, track_name, false);
+
+            if (!err) {
+                move_track(tracks, disk_index, track_index + 1, src_dir, dest_dir, cb);
+            }
+        }
+    });
 }
 
 function unstage(staging_key, cb) {

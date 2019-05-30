@@ -1,16 +1,21 @@
 {
     "name": "roon-extension-cd-ripper",
-    "version": "0.1.2",
+    "version": "0.2.0",
     "description": "Extension that adds a CD ripper to your Roon system",
     "main": "cd-ripper.js",
     "author": "The Appgineer",
     "license": "Apache-2.0",
     "files": [],
     "dependencies": {
+        "mkdirp": "^0.5.0",
         "recursive-copy": "^2.0.10",
         "rimraf": "^2.6.3",
         "node-roon-api": "github:roonlabs/node-roon-api",
         "node-roon-api-settings": "github:roonlabs/node-roon-api-settings",
         "node-roon-api-status": "github:roonlabs/node-roon-api-status"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/TheAppgineer/roon-extension-cd-ripper.git"
     }
 }
