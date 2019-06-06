@@ -43,7 +43,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.2.0',
+    display_version:     '0.2.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -470,7 +470,7 @@ function configure(cb) {
 function rip(cb) {
     let first = true;
     let track;
-    let metadata;
+    let metadata = {};
 
     svc_status.set_status("CD Ripping in preparation...", false);
 
@@ -482,7 +482,7 @@ function rip(cb) {
             if (first) {
                 first = false;
 
-                metadata = get_metadata(string);
+                get_metadata(string, metadata);
 
                 if (string.includes('is a finished rip')) {
                     set_status('Already staged', false, metadata);
@@ -538,6 +538,15 @@ function rip(cb) {
                                 track = undefined;
                             }
                         }
+
+                        if (metadata && fields[2].includes('parsing .cue file')) {
+                            // Get the relative output path from the INFO string
+                            // It is needed because it has special characters replaced
+                            const path = fields[2].split("'")[1].split('/');
+
+                            metadata.fs_artist = path[0];
+                            metadata.fs_album = path[1];
+                        }
                         break;
                 }
             }
@@ -573,13 +582,11 @@ function create_config_file() {
     }
 }
 
-function get_metadata(string) {
+function get_metadata(string, metadata) {
     if (string.includes('disc id')) {
         const lines = string.split('\n');
-        let metadata = {};
-        let state = 0;
 
-        for (let i = 0; i < lines.length; i++) {
+        for (let i = 0, state = 0; i < lines.length && state < 3; i++) {
             switch (state) {
                 case 0:
                     if (lines[i] == 'Matching releases:') {
@@ -593,7 +600,7 @@ function get_metadata(string) {
                     break;
                 case 2:
                     if (lines[i] == '') {
-                        return metadata;
+                        state = 3;
                     } else {
                         const fields = lines[i].split(': ');
 
@@ -603,8 +610,6 @@ function get_metadata(string) {
             }
         }
     }
-
-    return undefined;
 }
 
 function set_status(string, error, metadata) {
@@ -672,7 +677,11 @@ function push_local(settings, cb) {
         let rel_path = '';
 
         if (staging_key) {
-            rel_path = `${staging[staging_key].Artist}/${staging[staging_key].Title}`;
+            if (staging[staging_key].fs_artist) {
+                rel_path = `${staging[staging_key].fs_artist}/${staging[staging_key].fs_album}`;
+            } else {
+                rel_path = `${staging[staging_key].Artist}/${staging[staging_key].Title}`;
+            }
         }
 
         const copy = rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options);
@@ -733,8 +742,16 @@ function push_remote(settings, cb) {
         }
 
         if (staging_key) {
-            const artist = staging[staging_key].Artist;
-            const album = staging[staging_key].Title;
+            let artist;
+            let album;
+
+            if (staging[staging_key].fs_artist) {
+                artist = staging[staging_key].fs_artist;
+                album = staging[staging_key].fs_album;
+            } else {
+                artist = staging[staging_key].Artist;
+                album = staging[staging_key].Title;
+            }
 
             command += `lcd "${artist}/${album}";` +
                        `mkdir "${artist}";cd "${artist}";` +
@@ -836,7 +853,7 @@ function move_to_multi_disk(settings, multi_disk, cb) {
                         console.log(multi_disk);
 
                         // Move log file
-                        const file = `${multi_disk.Artist} - ${staging[staging_key].Title}.log`;
+                        const file = `${staging[staging_key].fs_artist} - ${staging[staging_key].fs_album}.log`;
                         fs.rename(src_dir + file, dest_dir + file, (err) => {
                             remove(staging_key, cb);
                         });
