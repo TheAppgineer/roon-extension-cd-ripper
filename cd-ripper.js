@@ -815,11 +815,19 @@ function convert(settings, cb) {
     multi_disk.tracks = [];
     staging[multi_disk.Title] = multi_disk;
 
-    move_to_multi_disk(settings, multi_disk, cb);
+    move_to_multi_disk(settings, multi_disk, () => {
+        svc_status.set_status(`Multi Disk album "${multi_disk.Title}" created`, false);
+
+        cb && cb();
+    });
 }
 
 function append(settings, cb) {
-    move_to_multi_disk(settings, staging[settings.multi_disk_title], cb);
+    move_to_multi_disk(settings, staging[settings.multi_disk_title], () => {
+        svc_status.set_status(`Multi Disk album "${settings.multi_disk_title}" extended`, false);
+
+        cb && cb();
+    });
 }
 
 function move_to_multi_disk(settings, multi_disk, cb) {
