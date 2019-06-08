@@ -853,7 +853,14 @@ function move_to_multi_disk(settings, multi_disk, cb) {
                         console.log(multi_disk);
 
                         // Move log file
-                        const file = `${staging[staging_key].fs_artist} - ${staging[staging_key].fs_album}.log`;
+                        let file;
+
+                        if (staging[staging_key].fs_artist) {
+                            file = `${staging[staging_key].fs_artist} - ${staging[staging_key].fs_album}.log`;
+                        } else {
+                            file = `${staging[staging_key].Artist} - ${staging[staging_key].Title}.log`;
+                        }
+
                         fs.rename(src_dir + file, dest_dir + file, (err) => {
                             remove(staging_key, cb);
                         });
