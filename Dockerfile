@@ -9,8 +9,6 @@ RUN apt-get update && \
 COPY cd-ripper.js LICENSE package.json /home/worker/
 RUN npm install
 
-ENV PATH=$PATH:/whipper
-
 # Override entrypoint of base image
 ENTRYPOINT ["/usr/bin/env"]
 

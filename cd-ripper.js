@@ -43,7 +43,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.2.1',
+    display_version:     '0.3.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -405,7 +405,7 @@ function configure(cb) {
 
     create_config_file();
 
-    whipper(['drive', 'analyze'], {
+    whipper(['--eject', 'never', 'drive', 'analyze'], {
         stdout: (data) => {
             if (is_configured === undefined) {
                 const string = data.toString().trim();
@@ -458,11 +458,11 @@ function configure(cb) {
                             svc_status.set_status("Drive configuration successful!", false);
                         }
 
-                        cb && cb();
+                        eject(cb);
                     }
                 });
             } else {
-                cb && cb();
+                eject(cb);
             }
         }
     });
@@ -567,8 +567,19 @@ function rip(cb) {
                 }
             }
 
-            cb && cb(staging_key);
+            eject(() => {
+                cb && cb(staging_key);
+            });
         }
+    });
+}
+
+function eject(cb) {
+    const execFile = require('child_process').execFile;
+
+    // The eject application by Jeff Tranter requires an unlock of the device button before the eject
+    execFile('eject', ['-i', 'off'], () => {
+        execFile('eject', ['-r'], cb);
     });
 }
 
