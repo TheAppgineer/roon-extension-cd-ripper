@@ -912,9 +912,17 @@ function remove(staging_key, cb) {
     if (staging_key != undefined) {
         const rimraf = require("rimraf");
         const fs = require("fs");
-        const artist = staging[staging_key].Artist;
-        const album = staging[staging_key].Title;
+        let artist;
+        let album;
         let path = output_dir;
+
+        if (staging[staging_key].fs_artist) {
+            artist = staging[staging_key].fs_artist;
+            album = staging[staging_key].fs_album;
+        } else {
+            artist = staging[staging_key].Artist;
+            album = staging[staging_key].Title;
+        }
 
         path += `/${artist}/${album}`;
         console.log(`Deleting path: ${path}`);
