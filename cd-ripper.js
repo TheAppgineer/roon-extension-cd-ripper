@@ -142,7 +142,7 @@ function makelayout(settings) {
         if (has_drive) {
             if (is_configured) {
                 action.values.push({ title: "Rip", value: ACTION_RIP });
-                //action.values.push({ title: "Rip & Push", value: ACTION_RIP_PUSH });
+                action.values.push({ title: "Rip & Push", value: ACTION_RIP_PUSH });
             } else {
                 action.values.push({ title: "Configure Drive", value: ACTION_CONFIGURE });
             }
@@ -301,8 +301,9 @@ function perform_action(settings) {
             rip((staging_key) => {
                 if (staging_key != undefined) {
                     settings.staging_key = staging_key;
-                    settings.password = password;
+                    settings.password = password;       // Restore password
                     push(settings, set_idle);
+                    delete settings.password;
                 } else {
                     set_idle();
                 }
@@ -471,6 +472,7 @@ function rip(cb) {
     let first = true;
     let track;
     let metadata = {};
+    let staging_key;
 
     svc_status.set_status("CD Ripping in preparation...", false);
 
@@ -487,6 +489,9 @@ function rip(cb) {
                 if (string.includes('is a finished rip')) {
                     set_status('Already staged', false, metadata);
 
+                    if (staging[metadata.Title]) {
+                        staging_key = metadata.Title;
+                    }
                 } else if (metadata) {
                     metadata.tracks = [];
                 }
@@ -552,8 +557,6 @@ function rip(cb) {
             }
         },
         close: (code) => {
-            let staging_key;
-
             if (code === 0) {
                 set_status("Successfully ripped!", false, metadata);
 
