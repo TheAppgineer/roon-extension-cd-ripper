@@ -43,7 +43,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.3.0',
+    display_version:     '0.3.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -677,16 +677,7 @@ function push_local(settings, cb) {
     const staging_key = settings.staging_key;     // Get copy to use in callbacks, setting will get cleared
 
     if (settings.share && staging_key !== undefined) {
-        const rcopy = require('recursive-copy');
-        const options = {
-            filter: [
-                '**/*.flac',
-                '**/*.log'
-            ],
-            overwrite:   true,
-            results:     false,
-            concurrency: 4
-        };
+        const mkdirp = require('mkdirp');
         const share = settings.share.replace('~', require('os').homedir());
         let rel_path = '';
 
@@ -698,41 +689,67 @@ function push_local(settings, cb) {
             }
         }
 
-        const copy = rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options);
+        mkdirp(`${share}/${rel_path}`, (err, made) => {
+            const rcopy = require('recursive-copy');
+            const options = {
+                filter: [
+                    '**/*.flac',
+                    '**/*.log'
+                ],
+                overwrite:   true,
+                results:     false,
+                concurrency: 4
+            };
+            const copy = rcopy(`${output_dir}/${rel_path}`, `${share}/${rel_path}`, options);
 
-        copy.on(rcopy.events.COPY_FILE_START, (operation) => {
-            set_status('Copying file: ' + operation.src + '...');
-        });
+            copy.on(rcopy.events.COPY_FILE_START, (operation) => {
+                set_status('Copying file: ' + operation.src + '...');
+            });
 
-        copy.on(rcopy.events.COPY_FILE_COMPLETE, (operation) => {
-            set_status('Copied file: ' + operation.src);
-        });
+            copy.on(rcopy.events.COPY_FILE_COMPLETE, (operation) => {
+                set_status('Copied file: ' + operation.src);
+            });
 
-        copy.on(rcopy.events.COMPLETE, () => {
-            set_status("Successfully pushed!", false);
+            copy.on(rcopy.events.COMPLETE, () => {
+                const fs = require('fs');
+                const rchown = require('chownr');
+                const stats = fs.statSync(share);
+                const top_dir = (made ? made : `${share}/${rel_path}`);
 
-            // Remove pushed files from staging area
-            remove(staging_key);
+                set_status("Changing file ownership...", false);
 
-            cb && cb();
-        });
+                // Use UID/GID of stats and change the ownership of the pushed files
+                rchown(top_dir, stats.uid, stats.gid, (err) => {
+                    if (err) {
+                        console.error(err);
+                    }
 
-        copy.on(rcopy.events.ERROR, (error) => {
-            if (error) {
-                const split = error.toString().split(': ');
+                    set_status("Successfully pushed!", false);
 
-                if (split.length > 1 && split[1] == 'ENOENT') {
-                    set_status("Album not found!\nStaging Area updated", true);
+                    cb && cb();
+                });
 
-                    // Remove pushed files from staging area
-                    remove(staging_key);
-                } else {
-                    console.error('Copy failed: ' + error);
-                    svc_status.set_status('Copy failed: ' + error, true);
+                // Remove pushed files from staging area
+                remove(staging_key);
+            });
+
+            copy.on(rcopy.events.ERROR, (error) => {
+                if (error) {
+                    const split = error.toString().split(': ');
+
+                    if (split.length > 1 && split[1] == 'ENOENT') {
+                        set_status("Album not found!\nStaging Area updated", true);
+
+                        // Remove pushed files from staging area
+                        remove(staging_key);
+                    } else {
+                        console.error('Copy failed: ' + error);
+                        svc_status.set_status('Copy failed: ' + error, true);
+                    }
                 }
-            }
 
-            cb && cb();
+                cb && cb();
+            });
         });
     } else {
         cb && cb();
