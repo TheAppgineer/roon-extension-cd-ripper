@@ -43,7 +43,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.3.1',
+    display_version:     '0.3.2',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -94,9 +94,10 @@ function makelayout(settings) {
         has_error: false
     };
     let global_settings = {
-        type: "group",
-        title: "Global Settings",
-        items: []
+        type:        "group",
+        title:       "Global Settings",
+        collapsable: true,
+        items:       []
     };
     let share = {
         type:    "string",
@@ -203,7 +204,7 @@ function makelayout(settings) {
 
                 if (Object.keys(staging).length > 1) {
                     if (settings.multi_disk_count) {
-                        if (staging[settings.staging_key].Title != settings.multi_disk_title) {
+                        if (staging[settings.staging_key].fs_album != settings.multi_disk_title) {
                             staging_actions.values.splice(1, 0, {
                                 title: `Append to "${settings.multi_disk_title}"`,
                                 value: STAGING_APPEND_MULTI
@@ -243,13 +244,13 @@ function makelayout(settings) {
                             };
 
                             if (settings.staging_key) {
-                                if (settings.multi_disk_title === undefined) {
-                                    settings.multi_disk_title = staging[settings.staging_key].Title;
+                                if (!settings.multi_disk_title) {
+                                    settings.multi_disk_title = decode_unicode(staging[settings.staging_key].fs_album);
                                 }
 
                                 l.layout.push(title);
 
-                                if (settings.multi_disk_title == staging[settings.staging_key].Title) {
+                                if (settings.multi_disk_title == decode_unicode(staging[settings.staging_key].fs_album)) {
                                     title.error = 'Multi Disk Title should differ from original title';
                                     l.has_error = true;
                                 }
@@ -262,10 +263,10 @@ function makelayout(settings) {
                 }
 
                 l.layout.push({
-                    type: "group",
+                    type:  "group",
                     title: `${staging[settings.staging_key].Artist.toUpperCase()} - ` +
-                            `${staging[settings.staging_key].Title.toUpperCase()}\n` +
-                            staging[settings.staging_key].tracks.join('\n'),
+                           `${staging[settings.staging_key].Title.toUpperCase()}\n` +
+                           staging[settings.staging_key].tracks.join('\n'),
                     items: []
                 });
             }
@@ -330,7 +331,7 @@ function perform_action(settings) {
                     unstage(settings.staging_key, set_idle);
                     break;
                 case STAGING_REMOVE:
-                    remove(settings.staging_key, set_idle);
+                    remove(settings.staging_key, settings, set_idle);
                     break;
                 default:
                     set_idle();
@@ -682,11 +683,18 @@ function push_local(settings, cb) {
         let rel_path = '';
 
         if (staging_key) {
+            let artist;
+            let album;
+
             if (staging[staging_key].fs_artist) {
-                rel_path = `${staging[staging_key].fs_artist}/${staging[staging_key].fs_album}`;
+                artist = decode_unicode(staging[staging_key].fs_artist);
+                album = decode_unicode(staging[staging_key].fs_album);
             } else {
-                rel_path = `${staging[staging_key].Artist}/${staging[staging_key].Title}`;
+                artist = staging[staging_key].Artist;
+                album = staging[staging_key].Title;
             }
+
+            rel_path = `${artist}/${album}`;
         }
 
         mkdirp(`${share}/${rel_path}`, (err, made) => {
@@ -730,7 +738,7 @@ function push_local(settings, cb) {
                 });
 
                 // Remove pushed files from staging area
-                remove(staging_key);
+                remove(staging_key, settings);
             });
 
             copy.on(rcopy.events.ERROR, (error) => {
@@ -741,11 +749,21 @@ function push_local(settings, cb) {
                         set_status("Album not found!\nStaging Area updated", true);
 
                         // Remove pushed files from staging area
-                        remove(staging_key);
+                        remove(staging_key, settings);
                     } else {
                         console.error('Copy failed: ' + error);
                         svc_status.set_status('Copy failed: ' + error, true);
                     }
+                }
+
+                cb && cb();
+            });
+
+            copy.catch((err) => {
+                console.error(err);
+
+                if (err.code == 'ENOENT') {
+                    svc_status.set_status('No such file or directory:\n' + err.path, true);
                 }
 
                 cb && cb();
@@ -777,8 +795,8 @@ function push_remote(settings, cb) {
             let album;
 
             if (staging[staging_key].fs_artist) {
-                artist = staging[staging_key].fs_artist;
-                album = staging[staging_key].fs_album;
+                artist = decode_unicode(staging[staging_key].fs_artist);
+                album = decode_unicode(staging[staging_key].fs_album);
             } else {
                 artist = staging[staging_key].Artist;
                 album = staging[staging_key].Title;
@@ -799,6 +817,7 @@ function push_remote(settings, cb) {
         // Use '-E' option to get the expected stdout/stderr behavior
         const args = ['-E', '-U', credentials, share, '-c', command];
         const child = require('child_process').spawn('smbclient', args);
+        let error = false;
 
         child.stdout.on('data', (data) => {
             const string = data.toString().trim();
@@ -810,18 +829,26 @@ function push_remote(settings, cb) {
         child.stderr.on('data', (data) => {
             const string = data.toString().trim();
 
-            console.log(`stderr: "${string}"`);
-            svc_status.set_status(string, true);
+            if (!error) {
+                if (string.includes('NT_STATUS_UNSUCCESSFUL') ||
+                    string.includes('NT_STATUS_OBJECT_PATH_NOT_FOUND')) {
+                    error = true;
+                }
+
+                console.log(`stderr: "${string}"`);
+                svc_status.set_status(string, error);
+            }
         });
 
         child.on('close', (code) => {
             console.log('smbclient exited with code:', code);
 
-            if (code === 0) {
+            // Return code 0 doesn't necessarily mean success :(
+            if (!error && code === 0) {
                 set_status("Successfully pushed!", false);
 
                 // Remove pushed files from staging area
-                remove(staging_key);
+                remove(staging_key, settings);
             }
 
             cb && cb();
@@ -843,8 +870,9 @@ function convert(settings, cb) {
 
     // Update fields
     multi_disk.Title = settings.multi_disk_title;
+    multi_disk.fs_album = settings.multi_disk_title;
     multi_disk.tracks = [];
-    staging[multi_disk.Title] = multi_disk;
+    staging[settings.multi_disk_title] = multi_disk;
 
     move_to_multi_disk(settings, multi_disk, () => {
         svc_status.set_status(`Multi Disk album "${multi_disk.Title}" created`, false);
@@ -865,13 +893,13 @@ function move_to_multi_disk(settings, multi_disk, cb) {
     const mkdirp = require('mkdirp');
     const fs = require('fs');
     const staging_key = settings.staging_key;
-    const artist_dir = `${output_dir}/${multi_disk.Artist}`;
+    const artist_dir = `${output_dir}/${decode_unicode(multi_disk.fs_artist)}`;
+    const dest_dir = `${artist_dir}/${decode_unicode(multi_disk.fs_album)}/`;
 
     // Copy files
-    mkdirp(`${artist_dir}/${multi_disk.Title}`, (err, made) => {
+    mkdirp(dest_dir, (err, made) => {
         if (!err) {
-            const src_dir = `${artist_dir}/${staging[staging_key].Title}/`;
-            const dest_dir = `${artist_dir}/${multi_disk.Title}/`;
+            const src_dir = `${artist_dir}/${decode_unicode(staging[staging_key].fs_album)}/`;
 
             move_track(staging[staging_key].tracks,
                        settings.multi_disk_count,
@@ -892,16 +920,11 @@ function move_to_multi_disk(settings, multi_disk, cb) {
                         console.log(multi_disk);
 
                         // Move log file
-                        let file;
-
-                        if (staging[staging_key].fs_artist) {
-                            file = `${staging[staging_key].fs_artist} - ${staging[staging_key].fs_album}.log`;
-                        } else {
-                            file = `${staging[staging_key].Artist} - ${staging[staging_key].Title}.log`;
-                        }
+                        const file = `${decode_unicode(staging[staging_key].fs_artist)} - ` +
+                                     `${decode_unicode(staging[staging_key].fs_album)}.log`;
 
                         fs.rename(src_dir + file, dest_dir + file, (err) => {
-                            remove(staging_key, cb);
+                            remove(staging_key, settings, cb);
                         });
                     }
                 }
@@ -939,7 +962,7 @@ function unstage(staging_key, cb) {
     cb && cb();
 }
 
-function remove(staging_key, cb) {
+function remove(staging_key, settings, cb) {
     if (staging_key != undefined) {
         const rimraf = require("rimraf");
         const fs = require("fs");
@@ -947,9 +970,14 @@ function remove(staging_key, cb) {
         let album;
         let path = output_dir;
 
+        if (staging_key == settings.multi_disk_title) {
+            delete settings.multi_disk_title;
+            delete settings.multi_disk_count;
+        }
+
         if (staging[staging_key].fs_artist) {
-            artist = staging[staging_key].fs_artist;
-            album = staging[staging_key].fs_album;
+            artist = decode_unicode(staging[staging_key].fs_artist);
+            album = decode_unicode(staging[staging_key].fs_album);
         } else {
             artist = staging[staging_key].Artist;
             album = staging[staging_key].Title;
@@ -972,6 +1000,15 @@ function remove(staging_key, cb) {
             unstage(staging_key, cb);
         });
     }
+}
+
+function decode_unicode(unicode_string) {
+    let result = unicode_string;
+
+    result = result.replace(/\\u([0-9a-fA-F]{4})/g, (m, cc) => String.fromCharCode("0x" + cc));
+    result = result.replace(/\\x([0-9a-fA-F]{2})/g, (m, cc) => String.fromCharCode("0x00" + cc));
+
+    return result;
 }
 
 function init() {
