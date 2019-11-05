@@ -43,7 +43,7 @@ var current_action = ACTION_IDLE;
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.3.2',
+    display_version:     '0.3.3',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -470,7 +470,6 @@ function configure(cb) {
 }
 
 function rip(cb) {
-    let first = true;
     let track;
     let metadata = {};
     let staging_key;
@@ -482,9 +481,7 @@ function rip(cb) {
             const string = data.toString().trim();
             let progress = undefined;
 
-            if (first) {
-                first = false;
-
+            if (Object.keys(metadata).length == 0) {
                 get_metadata(string, metadata);
 
                 if (string.includes('is a finished rip')) {
@@ -493,8 +490,6 @@ function rip(cb) {
                     if (staging[metadata.Title]) {
                         staging_key = metadata.Title;
                     }
-                } else if (metadata) {
-                    metadata.tracks = [];
                 }
             } else if (string.includes(' ... ')) {
                 progress = string.split(' ... ');
@@ -546,9 +541,11 @@ function rip(cb) {
                         }
 
                         if (metadata && fields[2].includes('parsing .cue file')) {
+                            const separator = fields[2].charAt(fields[2].length - 1);
+                            
                             // Get the relative output path from the INFO string
                             // It is needed because it has special characters replaced
-                            const path = fields[2].split("'")[1].split('/');
+                            const path = fields[2].split(separator)[1].split('/');
 
                             metadata.fs_artist = path[0];
                             metadata.fs_album = path[1];
@@ -615,6 +612,7 @@ function get_metadata(string, metadata) {
                     break;
                 case 2:
                     if (lines[i] == '') {
+                        metadata.tracks = [];
                         state = 3;
                     } else {
                         const fields = lines[i].split(': ');

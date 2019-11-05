@@ -1,4 +1,4 @@
-FROM joelametta/whipper:release_v0.7.3
+FROM theappgineer/whipper
 
 WORKDIR /home/worker
 
