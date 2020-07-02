@@ -1,4 +1,4 @@
-// Copyright 2019 The Appgineer
+// Copyright 2019, 2020 The Appgineer
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,32 +27,38 @@ const STAGING_APPEND_MULTI = 3;
 const STAGING_UNSTAGE = 4;
 const STAGING_REMOVE = 5;
 
+const MON_INACTIVE     = 1;
+const MON_ACTIVE       = 2;
+const MON_FILE_CHANGED = 3;
+
+const credentials_file = require('os').homedir() + '/.config/whipper/.smb';
 const output_dir = (process.argv[2] ? process.argv[2] : process.cwd() + '/output');
 
-var RoonApi         = require("node-roon-api"),
-    RoonApiSettings = require('node-roon-api-settings'),
-    RoonApiStatus   = require('node-roon-api-status');
+const fs              = require('fs'),
+      RoonApi         = require('node-roon-api'),
+      RoonApiSettings = require('node-roon-api-settings'),
+      RoonApiStatus   = require('node-roon-api-status');
 
-var core = undefined;
 var has_drive;
 var drive_props;
 var is_configured;
 var staging = {};
 var current_action = ACTION_IDLE;
+var smb_password = '';
 
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.3.3',
+    display_version:     '0.4.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
 
-    core_paired: function(core_) {
-        core = core_;
+    core_found: function(core) {
+        console.log('Core found:', core.display_name);
     },
-    core_unpaired: function(core_) {
-        core = undefined;
+    core_lost: function(core) {
+        console.log('Core lost:', core.display_name);
     }
 });
 
@@ -61,20 +67,25 @@ var rip_settings = roon.load_config("settings") || {
 
 var svc_settings = new RoonApiSettings(roon, {
     get_settings: function(cb) {
-        cb(makelayout(rip_settings));
+        get_credentials(rip_settings, (settings) => {
+            cb(makelayout(settings));
+        });
     },
     save_settings: function(req, isdryrun, settings) {
         let l = makelayout(settings.values);
+
+        hide_password(l.values);
         req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
 
         if (!isdryrun && !l.has_error) {
+            store_credentials(l.values);
             perform_action(l.values);
+
             if (l.values.action != ACTION_STAGING ||
                 (l.values.staging_action != STAGING_CONVERT_MULTI &&
                  l.values.staging_action != STAGING_APPEND_MULTI)) {
                 delete l.values.action;
             }
-            delete l.values.password;
             delete l.values.staging_action;
             delete l.values.staging_key;
 
@@ -86,6 +97,59 @@ var svc_settings = new RoonApiSettings(roon, {
 });
 
 var svc_status = new RoonApiStatus(roon);
+
+function get_credentials(settings, cb) {
+    fs.readFile(credentials_file, (err, data) => {
+        if (err) {
+            cb && cb(settings);
+        } else {
+            const credentials = data.toString().split('\n');
+            const user = credentials[0].split('=')[1].trim();
+            const password = credentials[1].split('=')[1].trim();
+            let new_settings = {};
+
+            // Copy settings
+            for (const key in settings) {
+                new_settings[key] = settings[key];
+            }
+
+            // Add credentials
+            new_settings.user = user;
+            new_settings.password = '';
+
+            for (let i = 0; i < password.length; i++) {
+                new_settings.password += '\u2022';
+            }
+
+            cb && cb(new_settings);
+        }
+    });
+}
+
+function store_credentials(settings) {
+    const credentials = `username = ${settings.user}\npassword = ${smb_password}`;
+
+    smb_password = '';
+    fs.writeFileSync(credentials_file, credentials, { mode: 0o600 });
+
+    delete settings.user;
+    delete settings.password;
+}
+
+function hide_password(settings) {
+    const password = settings.password.replace(/\u2022/g, '');
+
+    if (password) {
+        smb_password = password;
+        settings.password = '';
+
+        for (let i = 0; i < password.length; i++) {
+            settings.password += '\u2022';
+        }
+    } else if (settings.password == '') {
+        smb_password = '';
+    }
+}
 
 function makelayout(settings) {
     let l = {
@@ -114,21 +178,32 @@ function makelayout(settings) {
                 title:   "User Name",
                 setting: "user"
             });
+            global_settings.items.push({
+                type:    "string",
+                title:   "Password",
+                setting: "password"
+            });
         } else if (settings.share.indexOf('/') != 0 && settings.share.indexOf('~') != 0) {
             share.error = "Please specify an absolute path or SMB share";
             l.has_error = true;
         }
     }
 
+    if (settings.autorip !== undefined) {
+        global_settings.items.push({
+            type:    "dropdown",
+            title:   "Auto Rip",
+            values:  [
+                { title: "Disabled", value: false },
+                { title: "Enabled",  value: true  }
+            ],
+            setting: "autorip"
+        });
+    }
+
     l.layout.push(global_settings);
 
     if (current_action === ACTION_IDLE) {
-        // Collect possible actions
-        const password = {
-            type:    "string",
-            title:   "Password (not stored)",
-            setting: "password"
-        };
         const setup_share = {
             type:  "label",
             title: "Please setup Share in Global Settings"
@@ -140,6 +215,7 @@ function makelayout(settings) {
             setting: "action"
         };
 
+        // Collect possible actions
         if (has_drive) {
             if (is_configured) {
                 action.values.push({ title: "Rip", value: ACTION_RIP });
@@ -162,9 +238,7 @@ function makelayout(settings) {
             if (settings.share) {
                 if (settings.share.indexOf('//') == 0) {
                     // SMB share
-                    if (settings.user) {
-                        l.layout.push(password);
-                    } else {
+                    if (!settings.user) {
                         l.layout.push(setup_share);
                     }
                 }
@@ -226,9 +300,7 @@ function makelayout(settings) {
                             if (settings.share) {
                                 if (settings.share.indexOf('//') == 0) {
                                     // SMB share
-                                    if (settings.user) {
-                                        l.layout.push(password);
-                                    } else {
+                                    if (!settings.user) {
                                         l.layout.push(setup_share);
                                     }
                                 }
@@ -290,42 +362,28 @@ function perform_action(settings) {
             scan(set_idle);
             break;
         case ACTION_CONFIGURE:
-            configure(set_idle);
+            configure(eject);
             break;
         case ACTION_RIP:
-            rip(set_idle);
+            rip(eject);
             break;
         case ACTION_RIP_PUSH:
-            // Keep the password for later
-            let password = settings.password;
-
             rip((staging_key) => {
-                if (staging_key != undefined) {
-                    settings.staging_key = staging_key;
-                    settings.password = password;       // Restore password
-                    push(settings, set_idle);
-                    delete settings.password;
-                } else {
-                    set_idle();
-                }
+                push(staging_key, settings, eject);
             });
             break;
         case ACTION_STAGING:
             switch (settings.staging_action) {
                 case STAGING_PUSH:
-                    if (settings.staging_key != undefined) {
-                        push(settings, set_idle);
-                    } else {
-                        set_idle();
-                    }
+                    push(settings.staging_key, settings, set_idle);
                     break;
                 case STAGING_CONVERT_MULTI:
                     settings.multi_disk_count = 1;
-                    convert(settings, set_idle);
+                    convert(settings.staging_key, settings, set_idle);
                     break;
                 case STAGING_APPEND_MULTI:
                     settings.multi_disk_count++;
-                    append(settings, set_idle);
+                    append(settings.staging_key, settings, set_idle);
                     break;
                 case STAGING_UNSTAGE:
                     unstage(settings.staging_key, set_idle);
@@ -459,11 +517,11 @@ function configure(cb) {
                             svc_status.set_status("Drive configuration successful!", false);
                         }
 
-                        eject(cb);
+                        cb && cb();
                     }
                 });
             } else {
-                eject(cb);
+                cb && cb();
             }
         }
     });
@@ -483,14 +541,6 @@ function rip(cb) {
 
             if (Object.keys(metadata).length == 0) {
                 get_metadata(string, metadata);
-
-                if (string.includes('is a finished rip')) {
-                    set_status('Already staged', false, metadata);
-
-                    if (staging[metadata.Title]) {
-                        staging_key = metadata.Title;
-                    }
-                }
             } else if (string.includes(' ... ')) {
                 progress = string.split(' ... ');
 
@@ -512,6 +562,14 @@ function rip(cb) {
                 }
             }
 
+            if (string.includes('is a finished rip')) {
+                set_status('Already staged', false, metadata);
+
+                if (staging[metadata.Title]) {
+                    staging_key = metadata.Title;
+                }
+            }
+
             if (track && progress) {
                 set_status(`${track} (${progress})`, false, metadata);
             }
@@ -524,7 +582,7 @@ function rip(cb) {
 
                 switch (fields[0]) {
                     case 'CRITICAL':
-                        svc_status.set_status(fields.slice(2).join(':'), true);
+                        svc_status.set_status("Please insert a CD and retry", true);
                         break;
                     case 'INFO':
                         if (fields[2].includes('ripping track ')) {
@@ -555,35 +613,33 @@ function rip(cb) {
             }
         },
         close: (code) => {
-            if (code === 0) {
-                set_status("Successfully ripped!", false, metadata);
+            if (metadata) {
+                if (code === 0) {
+                    set_status("Successfully ripped!", false, metadata);
 
-                if (metadata) {
                     staging_key = metadata.Title;
-
                     staging[staging_key] = metadata;
+                } else {
+                    // TODO: Cleanup a partial rip
                 }
             }
 
-            eject(() => {
-                cb && cb(staging_key);
-            });
+            cb && cb(staging_key);
         }
     });
 }
 
-function eject(cb) {
+function eject() {
     const execFile = require('child_process').execFile;
 
     // The eject application by Jeff Tranter requires an unlock of the device button before the eject
     execFile('eject', ['-i', 'off'], () => {
-        execFile('eject', ['-r'], cb);
+        execFile('eject', ['-r'], set_idle);
     });
 }
 
 function create_config_file() {
     const config_file = require('os').homedir() + '/.config/whipper/whipper.conf';
-    const fs = require('fs');
 
     if (!fs.existsSync(config_file)) {
         // TODO: EACCES exception handling
@@ -656,25 +712,52 @@ function whipper(user_args, cbs) {
     });
 }
 
-function push(settings, cb) {
-    set_status(`Pushing "${staging[settings.staging_key].Artist} - ${staging[settings.staging_key].Title}"...`,
-               false);
+function push(staging_key, settings, cb) {
+    if (staging_key != undefined) {
+        set_status(`Pushing "${staging[staging_key].Artist} - ${staging[staging_key].Title}"\u2026`, false);
 
-    if (settings.staging_key == settings.multi_disk_title) {
-        delete settings.multi_disk_title;
-        delete settings.multi_disk_count;
-    }
+        if (staging_key == settings.multi_disk_title) {
+            delete settings.multi_disk_title;
+            delete settings.multi_disk_count;
+        }
 
-    if (settings.share.indexOf('//') == 0) {
-        push_remote(settings, cb);
+        remove_hidden_track(staging_key);
+
+        if (settings.share.indexOf('//') == 0) {
+            push_remote(staging_key, settings, cb);
+        } else {
+            push_local(staging_key, settings, cb);
+        }
     } else {
-        push_local(settings, cb);
+        cb && cb();
     }
 }
 
-function push_local(settings, cb) {
-    const staging_key = settings.staging_key;     // Get copy to use in callbacks, setting will get cleared
+function remove_hidden_track(staging_key) {
+    const regex = /^00 - .+[.]flac$/;
+    let artist;
+    let album;
 
+    if (staging[staging_key].fs_artist) {
+        artist = decode_unicode(staging[staging_key].fs_artist);
+        album = decode_unicode(staging[staging_key].fs_album);
+    } else {
+        artist = staging[staging_key].Artist;
+        album = staging[staging_key].Title;
+    }
+
+    const path = `${output_dir}/${artist}/${album}/`;
+
+    fs.readdirSync(path)
+    .filter(f => regex.test(f))
+    .map(f => {
+        console.log('Removing hidden track:', path + f);
+        staging[staging_key].tracks.shift();
+        fs.unlinkSync(path + f);
+    });
+}
+
+function push_local(staging_key, settings, cb) {
     if (settings.share && staging_key !== undefined) {
         const mkdirp = require('mkdirp');
         const share = settings.share.replace('~', require('os').homedir());
@@ -695,7 +778,7 @@ function push_local(settings, cb) {
             rel_path = `${artist}/${album}`;
         }
 
-        mkdirp(`${share}/${rel_path}`, (err, made) => {
+        mkdirp(`${share}/${rel_path}`).then((made) => {
             const rcopy = require('recursive-copy');
             const options = {
                 filter: [
@@ -717,7 +800,6 @@ function push_local(settings, cb) {
             });
 
             copy.on(rcopy.events.COMPLETE, () => {
-                const fs = require('fs');
                 const rchown = require('chownr');
                 const stats = fs.statSync(share);
                 const top_dir = (made ? made : `${share}/${rel_path}`);
@@ -772,15 +854,12 @@ function push_local(settings, cb) {
     }
 }
 
-function push_remote(settings, cb) {
-    const staging_key = settings.staging_key;     // Get copy to use in callbacks, setting will get cleared
-
-    if (settings.share && settings.user && staging_key !== undefined) {
+function push_remote(staging_key, settings, cb) {
+    if (settings.share && staging_key !== undefined) {
         const share_fields = settings.share.split('/');
         const no_of_slashes_till_path_slice = 4;    // Including slash of path slice
         const share = share_fields.slice(0, no_of_slashes_till_path_slice).join('/');
         let command = `lcd "${output_dir}";`;
-        let credentials = settings.user;
 
         if (share_fields.length > no_of_slashes_till_path_slice) {
             const path = share_fields.slice(no_of_slashes_till_path_slice).join('/');
@@ -805,15 +884,11 @@ function push_remote(settings, cb) {
                        `mkdir "${album}";cd "${album}";`;
         }
 
-        if (settings.password) {
-            credentials += `%${settings.password}`;
-        }
-
         command += 'prompt;recurse;mput *.flac;mput *.log';
         console.log(share, command);
 
         // Use '-E' option to get the expected stdout/stderr behavior
-        const args = ['-E', '-U', credentials, share, '-c', command];
+        const args = ['-E', '-A', credentials_file, share, '-c', command];
         const child = require('child_process').spawn('smbclient', args);
         let error = false;
 
@@ -829,7 +904,9 @@ function push_remote(settings, cb) {
 
             if (!error) {
                 if (string.includes('NT_STATUS_UNSUCCESSFUL') ||
-                    string.includes('NT_STATUS_OBJECT_PATH_NOT_FOUND')) {
+                    string.includes('NT_STATUS_OBJECT_PATH_NOT_FOUND') ||
+                    string.includes('NT_STATUS_BAD_NETWORK_NAME') ||
+                    string.includes('NT_STATUS_LOGON_FAILURE')) {
                     error = true;
                 }
 
@@ -856,13 +933,13 @@ function push_remote(settings, cb) {
     }
 }
 
-function convert(settings, cb) {
+function convert(staging_key, settings, cb) {
     let multi_disk = {};
 
     // Copy fields
-    for (const key in staging[settings.staging_key]) {
+    for (const key in staging[staging_key]) {
         if (key != 'tracks' && key != 'Duration') {
-            multi_disk[key] = staging[settings.staging_key][key];
+            multi_disk[key] = staging[staging_key][key];
         }
     }
 
@@ -872,69 +949,66 @@ function convert(settings, cb) {
     multi_disk.tracks = [];
     staging[settings.multi_disk_title] = multi_disk;
 
-    move_to_multi_disk(settings, multi_disk, () => {
+    move_to_multi_disk(staging_key, settings, multi_disk, () => {
         svc_status.set_status(`Multi Disk album "${multi_disk.Title}" created`, false);
 
         cb && cb();
     });
 }
 
-function append(settings, cb) {
-    move_to_multi_disk(settings, staging[settings.multi_disk_title], () => {
+function append(staging_key, settings, cb) {
+    move_to_multi_disk(staging_key, settings, staging[settings.multi_disk_title], () => {
         svc_status.set_status(`Multi Disk album "${settings.multi_disk_title}" extended`, false);
 
         cb && cb();
     });
 }
 
-function move_to_multi_disk(settings, multi_disk, cb) {
+function move_to_multi_disk(staging_key, settings, multi_disk, cb) {
     const mkdirp = require('mkdirp');
-    const fs = require('fs');
-    const staging_key = settings.staging_key;
     const artist_dir = `${output_dir}/${decode_unicode(multi_disk.fs_artist)}`;
     const dest_dir = `${artist_dir}/${decode_unicode(multi_disk.fs_album)}/`;
 
     // Copy files
-    mkdirp(dest_dir, (err, made) => {
-        if (!err) {
-            const src_dir = `${artist_dir}/${decode_unicode(staging[staging_key].fs_album)}/`;
+    mkdirp(dest_dir)
+    .then((made) => {
+        const src_dir = `${artist_dir}/${decode_unicode(staging[staging_key].fs_album)}/`;
 
-            move_track(staging[staging_key].tracks,
-                       settings.multi_disk_count,
-                       0,
-                       src_dir,
-                       dest_dir,
-                       (err, track_name, done) => {
-                if (err) {
-                    svc_status.set_status(err, true);
+        move_track(staging[staging_key].tracks,
+                   settings.multi_disk_count,
+                   0,
+                   src_dir,
+                   dest_dir,
+                   (err, track_name, done) => {
+            if (err) {
+                svc_status.set_status(err, true);
 
-                    cb && cb();
-                } else {
-                    if (track_name) {
-                        multi_disk.tracks.push(track_name);
-                    }
-
-                    if (done) {
-                        console.log(multi_disk);
-
-                        // Move log file
-                        const file = `${decode_unicode(staging[staging_key].fs_artist)} - ` +
-                                     `${decode_unicode(staging[staging_key].fs_album)}.log`;
-
-                        fs.rename(src_dir + file, dest_dir + file, (err) => {
-                            remove(staging_key, settings, cb);
-                        });
-                    }
+                cb && cb();
+            } else {
+                if (track_name) {
+                    multi_disk.tracks.push(track_name);
                 }
-            });
-        } else {
-            cb && cb();
-        }
+
+                if (done) {
+                    console.log(multi_disk);
+
+                    // Move log file
+                    const file = `${decode_unicode(staging[staging_key].fs_artist)} - ` +
+                                 `${decode_unicode(staging[staging_key].fs_album)}.log`;
+
+                    fs.rename(src_dir + file, dest_dir + file, (err) => {
+                        remove(staging_key, settings, cb);
+                    });
+                }
+            }
+        });
+    })
+    .catch((err) => {
+        cb && cb();
     });
 }
 
 function move_track(tracks, disk_index, track_index, src_dir, dest_dir, cb) {
-    const fs = require('fs');
     const src_file = `${tracks[track_index].split('.flac')[0]}.flac`;
     const track_name = `0${disk_index}-${tracks[track_index]}`;
     const dest_file = `${track_name.split('.flac')[0]}.flac`;
@@ -962,8 +1036,7 @@ function unstage(staging_key, cb) {
 
 function remove(staging_key, settings, cb) {
     if (staging_key != undefined) {
-        const rimraf = require("rimraf");
-        const fs = require("fs");
+        const rimraf = require('rimraf');
         let artist;
         let album;
         let path = output_dir;
@@ -985,7 +1058,11 @@ function remove(staging_key, settings, cb) {
         console.log(`Deleting path: ${path}`);
 
         // Delete the files
-        rimraf(path, () => {
+        rimraf(path, (err) => {
+            if (err) {
+                console.error(err);
+            }
+
             // Remove artist directory if empty now
             try {
                 fs.rmdirSync(`${output_dir}/${artist}`);
@@ -1030,12 +1107,36 @@ function init() {
         staging = staging_object;
     }
 
+    monitor_file(`${require('os').homedir()}/inserted`, (state) => {
+        switch (state) {
+            case MON_INACTIVE:
+                console.log(`Disk monitoring inactive`);
+                break;
+            case MON_ACTIVE:
+                console.log(`Disk monitoring active`);
+                break;
+            case MON_FILE_CHANGED:
+                console.log(`Disk inserted`);
+
+                if (rip_settings.autorip === undefined) {
+                    rip_settings.autorip = false;
+                    roon.save_config("settings", rip_settings);
+                } else if (rip_settings.autorip && is_configured) {
+                    current_action = ACTION_RIP_PUSH;
+
+                    rip((staging_key) => {
+                        push(staging_key, rip_settings, eject);
+                    });
+                }
+                break;
+        }
+    });
+
     roon.start_discovery();
     perform_action({ action: ACTION_SCAN });
 }
 
 function read_JSON_file_sync(file) {
-    const fs = require('fs');
     let parsed = undefined;
 
     try {
@@ -1049,9 +1150,23 @@ function read_JSON_file_sync(file) {
     return parsed;
 }
 
-function terminate() {
-    const fs = require('fs');
+function monitor_file(file, cb) {
+    // Check if the file is readable.
+    fs.access(file, fs.constants.R_OK, (err) => {
+        cb && cb(err ? MON_INACTIVE : MON_ACTIVE);
 
+        if (!err) {
+            fs.watch(file, (eventType) => {
+                // Get the size from the file stats and only report change if it has actual content
+                fs.stat(file, (err, stats) => {
+                    cb && cb(err ? MON_INACTIVE : (stats.size ? MON_FILE_CHANGED : MON_ACTIVE));
+                });
+            });
+        }
+    });
+}
+
+function terminate() {
     if (staging) {
         fs.writeFileSync(output_dir + '/staging.json', JSON.stringify(staging));
     }
