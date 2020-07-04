@@ -100,37 +100,53 @@ var svc_status = new RoonApiStatus(roon);
 
 function get_credentials(settings, cb) {
     fs.readFile(credentials_file, (err, data) => {
-        if (err) {
-            cb && cb(settings);
-        } else {
+        let new_settings = {};
+
+        // Copy settings
+        for (const key in settings) {
+            new_settings[key] = settings[key];
+        }
+
+        new_settings.user = '';
+        new_settings.password = '';
+
+        if (!err && data.length) {
             const credentials = data.toString().split('\n');
             const user = credentials[0].split('=')[1].trim();
-            const password = credentials[1].split('=')[1].trim();
-            let new_settings = {};
-
-            // Copy settings
-            for (const key in settings) {
-                new_settings[key] = settings[key];
-            }
 
             // Add credentials
             new_settings.user = user;
-            new_settings.password = '';
 
-            for (let i = 0; i < password.length; i++) {
-                new_settings.password += '\u2022';
+            if (credentials.length > 1) {
+                const password = credentials[1].split('=')[1].trim();
+
+                for (let i = 0; i < password.length; i++) {
+                    new_settings.password += '\u2022';
+                }
             }
-
-            cb && cb(new_settings);
         }
+
+        cb && cb(new_settings);
     });
 }
 
 function store_credentials(settings) {
-    const credentials = `username = ${settings.user}\npassword = ${smb_password}`;
+    let credentials = '';
 
-    smb_password = '';
-    fs.writeFileSync(credentials_file, credentials, { mode: 0o600 });
+    if (settings.user) {
+        credentials += `username = ${settings.user}`
+
+        if (smb_password) {
+            credentials +=`\npassword = ${smb_password}`;
+            smb_password = '';
+
+            fs.writeFileSync(credentials_file, credentials, { mode: 0o600 });
+        } else if (!settings.password) {
+            fs.writeFileSync(credentials_file, credentials, { mode: 0o600 });
+        }
+    } else {
+        fs.writeFileSync(credentials_file, credentials, { mode: 0o600 });
+    }
 
     delete settings.user;
     delete settings.password;
@@ -146,8 +162,6 @@ function hide_password(settings) {
         for (let i = 0; i < password.length; i++) {
             settings.password += '\u2022';
         }
-    } else if (settings.password == '') {
-        smb_password = '';
     }
 }
 
@@ -204,9 +218,10 @@ function makelayout(settings) {
     l.layout.push(global_settings);
 
     if (current_action === ACTION_IDLE) {
-        const setup_share = {
-            type:  "label",
-            title: "Please setup Share in Global Settings"
+        let setup_share = {
+            type:  "group",
+            title: "Please verify Global Settings",
+            items: []
         };
         let action = {
             type:    "dropdown",
@@ -239,11 +254,15 @@ function makelayout(settings) {
                 if (settings.share.indexOf('//') == 0) {
                     // SMB share
                     if (!settings.user) {
+                        setup_share.title += ', no credentials set'
                         l.layout.push(setup_share);
                     }
                 }
             } else {
+                setup_share.title += ', no Share set'
+                share.error = "Please specify an absolute path or SMB share";
                 l.layout.push(setup_share);
+                l.has_error = true;
             }
 
             // No push from staging area
@@ -301,11 +320,15 @@ function makelayout(settings) {
                                 if (settings.share.indexOf('//') == 0) {
                                     // SMB share
                                     if (!settings.user) {
+                                        setup_share.title += ', no credentials set'
                                         l.layout.push(setup_share);
                                     }
                                 }
                             } else {
+                                setup_share.title += ', no Share set'
+                                share.error = "Please specify an absolute path or SMB share";
                                 l.layout.push(setup_share);
+                                l.has_error = true;
                             }
                             break;
                         case STAGING_CONVERT_MULTI:
@@ -888,7 +911,7 @@ function push_remote(staging_key, settings, cb) {
         console.log(share, command);
 
         // Use '-E' option to get the expected stdout/stderr behavior
-        const args = ['-E', '-A', credentials_file, share, '-c', command];
+        const args = ['-N', '-E', '-A', credentials_file, share, '-c', command];
         const child = require('child_process').spawn('smbclient', args);
         let error = false;
 
