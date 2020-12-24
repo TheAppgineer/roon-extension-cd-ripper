@@ -18,14 +18,14 @@ const ACTION_IDLE = undefined;
 const ACTION_SCAN = 1;
 const ACTION_CONFIGURE = 2;
 const ACTION_RIP = 3;
-const ACTION_RIP_PUSH = 4;
-const ACTION_STAGING = 5;
+const ACTION_RIP_FORCE = 4;
+const ACTION_RIP_PUSH = 5;
+const ACTION_STAGING = 6;
 
 const STAGING_PUSH = 1;
 const STAGING_CONVERT_MULTI = 2;
 const STAGING_APPEND_MULTI = 3;
-const STAGING_UNSTAGE = 4;
-const STAGING_REMOVE = 5;
+const STAGING_REMOVE = 4;
 
 const MON_INACTIVE     = 1;
 const MON_ACTIVE       = 2;
@@ -49,7 +49,7 @@ var smb_password = '';
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.4.0',
+    display_version:     '0.5.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -234,6 +234,7 @@ function makelayout(settings) {
         if (has_drive) {
             if (is_configured) {
                 action.values.push({ title: "Rip", value: ACTION_RIP });
+                action.values.push({ title: "Rip (forced)", value: ACTION_RIP_FORCE });
                 action.values.push({ title: "Rip & Push", value: ACTION_RIP_PUSH });
             } else {
                 action.values.push({ title: "Configure Drive", value: ACTION_CONFIGURE });
@@ -289,13 +290,12 @@ function makelayout(settings) {
                     values:  [
                         { title: "(select staging action)", value: undefined },
                         { title: "Push",                    value: STAGING_PUSH },
-                        //{ title: "Unstage",                 value: STAGING_UNSTAGE },
                         { title: "Remove",                  value: STAGING_REMOVE }
                     ],
                     setting: "staging_action"
                 };
 
-                if (Object.keys(staging).length > 1) {
+                if (Object.keys(staging).length) {
                     if (settings.multi_disk_count) {
                         if (staging[settings.staging_key].fs_album != settings.multi_disk_title) {
                             staging_actions.values.splice(1, 0, {
@@ -390,6 +390,9 @@ function perform_action(settings) {
         case ACTION_RIP:
             rip(eject);
             break;
+        case ACTION_RIP_FORCE:
+            rip(eject, true);
+            break;
         case ACTION_RIP_PUSH:
             rip((staging_key) => {
                 push(staging_key, settings, eject);
@@ -407,9 +410,6 @@ function perform_action(settings) {
                 case STAGING_APPEND_MULTI:
                     settings.multi_disk_count++;
                     append(settings.staging_key, settings, set_idle);
-                    break;
-                case STAGING_UNSTAGE:
-                    unstage(settings.staging_key, set_idle);
                     break;
                 case STAGING_REMOVE:
                     remove(settings.staging_key, settings, set_idle);
@@ -550,37 +550,62 @@ function configure(cb) {
     });
 }
 
-function rip(cb) {
+function rip(cb, force) {
+    const force_options = ['--unknown'];
+    let options = ['--eject', 'never', 'cd', 'rip', '--cdr'];
     let track;
     let metadata = {};
     let staging_key;
+    let exec_cb = true;
 
     svc_status.set_status("CD Ripping in preparation...", false);
 
-    whipper(['--eject', 'never', 'cd', 'rip'], {
+    if (force) {
+        options = options.concat(force_options);
+    }
+
+    whipper(options, {
         stdout: (data) => {
             const string = data.toString().trim();
-            let progress = undefined;
 
             if (Object.keys(metadata).length == 0) {
                 get_metadata(string, metadata);
-            } else if (string.includes(' ... ')) {
-                progress = string.split(' ... ');
-
-                progress = (progress.length > 1 ? progress[1] : undefined);
-            } else if (string.includes('rip accurate')) {
+            } else {
                 const lines = string.split('\n');
 
-                if (track) {
-                    // Store track
-                    metadata.tracks.push(track);
-                }
+                if (string.includes('rip accurate')) {
+                    if (track) {
+                        // Store track
+                        metadata.tracks.push(track);
+                    }
 
-                for (let i = 0; i < lines.length; i++) {
-                    const confidence = lines[i].split('(')[1].split(')')[0];
+                    for (let i = 0; i < lines.length; i++) {
+                        const confidence = lines[i].split('(')[1].split(')')[0];
 
-                    if (metadata && i < metadata.tracks.length) {
-                        metadata.tracks[i] += ` (${confidence})`;
+                        if (metadata && i < metadata.tracks.length) {
+                            metadata.tracks[i] += ` (${confidence})`;
+                        }
+                    }
+                } else {
+                    let progress;
+
+                    for (let i = 0; i < lines.length; i++) {
+                        if (lines[i].includes('Reading table')) {
+                            set_status(lines[i], false, metadata);
+                        } else if (lines[i].includes(' ... ')) {
+                            // Some of the progress strings have carriage return line breaks!
+                            const fields = lines[i].split('\r')[0].split(' ... ');
+
+                            if (lines[i].includes('Reading track')) {
+                                progress = (fields.length > 1 ? fields[1] : undefined);
+                            } else if (lines[i].includes('Verifying track')) {
+                                progress = (fields.length > 1 ? `Verifying: ${fields[1]}` : undefined);
+                            }
+                        }
+                    }
+
+                    if (track && progress) {
+                        set_status(`${track} (${progress})`, false, metadata);
                     }
                 }
             }
@@ -592,10 +617,6 @@ function rip(cb) {
                     staging_key = metadata.Title;
                 }
             }
-
-            if (track && progress) {
-                set_status(`${track} (${progress})`, false, metadata);
-            }
         },
         stderr: (data) => {
             const lines = data.toString().trim().split('\n');
@@ -605,7 +626,17 @@ function rip(cb) {
 
                 switch (fields[0]) {
                     case 'CRITICAL':
-                        svc_status.set_status("Please insert a CD and retry", true);
+                        let status_string = 'No Disk found, please insert a CD and retry';
+
+                        if (fields[1] == 'whipper.command.cd') {
+                            if (fields[2].includes('--unknown')) {
+                                // unable to retrieve disc metadata, --unknown argument not passed
+                                status_string = 'No metadata found, use a forced rip instead';
+                                exec_cb = false;
+                            }
+                        }
+
+                        svc_status.set_status(status_string, true);
                         break;
                     case 'INFO':
                         if (fields[2].includes('ripping track ')) {
@@ -623,7 +654,7 @@ function rip(cb) {
 
                         if (metadata && fields[2].includes('parsing .cue file')) {
                             const separator = fields[2].charAt(fields[2].length - 1);
-                            
+
                             // Get the relative output path from the INFO string
                             // It is needed because it has special characters replaced
                             const path = fields[2].split(separator)[1].split('/');
@@ -647,7 +678,11 @@ function rip(cb) {
                 }
             }
 
-            cb && cb(staging_key);
+            if (exec_cb) {
+                cb && cb(staging_key);
+            } else {
+                current_action = ACTION_IDLE;
+            }
         }
     });
 }
@@ -669,7 +704,6 @@ function create_config_file() {
         fs.writeFileSync(config_file, "[whipper.cd.rip]\n" +
                                       "track_template = %%A/%%d/%%t - %%n\n" +
                                       "disc_template  = %%A/%%d/%%A - %%d\n\n");
-
     }
 }
 
@@ -680,8 +714,18 @@ function get_metadata(string, metadata) {
         for (let i = 0, state = 0; i < lines.length && state < 3; i++) {
             switch (state) {
                 case 0:
-                    if (lines[i] == 'Matching releases:') {
+                    if (lines[i].includes('MusicBrainz disc id')) {
+                        metadata.disk_id = lines[i].split(' ')[3];
+                    } else if (lines[i] == 'Matching releases:') {
                         state = 1;
+                    } else if (lines[i] == 'Submit this disc to MusicBrainz at the above URL.') {
+                        metadata.Type      = 'Unknown Type';
+                        metadata.Artist    = 'Unknown Artist';
+                        metadata.Title     = 'Unknown Album';
+                        metadata.fs_artist = metadata.Artist;
+                        metadata.fs_album  = metadata.disk_id;
+                        metadata.tracks    = [];
+                        state = 3;
                     }
                     break;
                 case 1:
@@ -723,7 +767,7 @@ function whipper(user_args, cbs) {
     });
 
     child.stderr.on('data', (data) => {
-        console.log('stderr: "' + data.toString().trim() + '"');
+        console.error('stderr: "' + data.toString().trim() + '"');
 
         cbs && cbs.stderr && cbs.stderr(data);
     });
