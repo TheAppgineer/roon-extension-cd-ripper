@@ -569,21 +569,28 @@ function rip(cb, force) {
             const string = data.toString().trim();
 
             if (Object.keys(metadata).length == 0) {
-                get_metadata(string, metadata);
+                if (get_metadata(string, metadata)) {
+                    if (staging[metadata.Title]) {
+                        // Append existing metadata
+                        metadata = staging[metadata.Title];
+                    } else {
+                        staging[metadata.Title] = metadata;
+                    }
+                }
             } else {
                 const lines = string.split('\n');
 
                 if (string.includes('rip accurate')) {
-                    if (track) {
-                        // Store track
-                        metadata.tracks.push(track);
-                    }
-
+                    // Parse AccurateRip results
                     for (let i = 0; i < lines.length; i++) {
-                        const confidence = lines[i].split('(')[1].split(')')[0];
+                        if (metadata && lines[i].includes('rip accurate')) {
+                            // track  1: rip accurate     (max confidence    200)
+                            const track_no = parseInt(lines[i].split(': ')[0].split('track')[1], 10);
+                            const confidence = lines[i].split('(')[1].split(')')[0];
 
-                        if (metadata && i < metadata.tracks.length) {
-                            metadata.tracks[i] += ` (${confidence})`;
+                            if (track_no - 1 < metadata.tracks.length) {
+                                metadata.tracks[track_no - 1] += ` (${confidence})`;
+                            }
                         }
                     }
                 } else {
@@ -639,20 +646,28 @@ function rip(cb, force) {
                         svc_status.set_status(status_string, true);
                         break;
                     case 'INFO':
-                        if (fields[2].includes('ripping track ')) {
-                            if (fields.length > 3) {
+                        if (fields[1] == 'whipper.command.cd') {
+                            if (fields[2].includes('ripping track ')) {
+                                // INFO:whipper.command.cd:ripping track
+                                if (fields.length > 3) {
+                                    track = fields[3].trim();
+                                } else {
+                                    track = undefined;
+                                }
+                            } else if (fields[2].includes('CRCs match for track')) {
+                                // INFO:whipper.command.cd:CRCs match for track
                                 if (metadata && track) {
-                                    // Store previous track
+                                    // Store track
                                     metadata.tracks.push(track);
                                 }
-
-                                track = fields[3].trim();
-                            } else {
-                                track = undefined;
+                            } else if (fields[2] == 'HTOA discarded, contains digital silence') {
+                                // INFO:whipper.command.cd:HTOA discarded, contains digital silence
+                                metadata.tracks.pop();
                             }
                         }
 
                         if (metadata && fields[2].includes('parsing .cue file')) {
+                            // INFO:whipper.image.cue:parsing .cue file
                             const separator = fields[2].charAt(fields[2].length - 1);
 
                             // Get the relative output path from the INFO string
@@ -672,7 +687,6 @@ function rip(cb, force) {
                     set_status("Successfully ripped!", false, metadata);
 
                     staging_key = metadata.Title;
-                    staging[staging_key] = metadata;
                 } else {
                     // TODO: Cleanup a partial rip
                 }
@@ -711,7 +725,7 @@ function get_metadata(string, metadata) {
     if (string.includes('disc id')) {
         const lines = string.split('\n');
 
-        for (let i = 0, state = 0; i < lines.length && state < 3; i++) {
+        for (let i = 0, state = 0; i < lines.length; i++) {
             switch (state) {
                 case 0:
                     if (lines[i].includes('MusicBrainz disc id')) {
@@ -725,7 +739,8 @@ function get_metadata(string, metadata) {
                         metadata.fs_artist = metadata.Artist;
                         metadata.fs_album  = metadata.disk_id;
                         metadata.tracks    = [];
-                        state = 3;
+
+                        return true;
                     }
                     break;
                 case 1:
@@ -736,11 +751,12 @@ function get_metadata(string, metadata) {
                 case 2:
                     if (lines[i] == '') {
                         metadata.tracks = [];
-                        state = 3;
+
+                        return true;
                     } else {
                         const fields = lines[i].split(': ');
 
-                        metadata[fields[0].trim()] = fields[1].trim();
+                        metadata[fields[0].trim()] = fields.slice(1).join(': ');
                     }
                     break;
             }
