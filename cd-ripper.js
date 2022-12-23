@@ -49,7 +49,7 @@ var smb_password = '';
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.5.0',
+    display_version:     '0.6.0',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -551,8 +551,8 @@ function configure(cb) {
 }
 
 function rip(cb, force) {
-    const force_options = ['--unknown'];
-    let options = ['--eject', 'never', 'cd', 'rip', '--cdr'];
+    const force_options = ['--unknown', '--keep-going'];
+    let options = ['--eject', 'never', 'cd', 'rip', '--cdr', '--max-retries', '3'];
     let track;
     let metadata = {};
     let staging_key;
@@ -638,12 +638,21 @@ function rip(cb, force) {
                         if (fields[1] == 'whipper.command.cd') {
                             if (fields[2].includes('--unknown')) {
                                 // unable to retrieve disc metadata, --unknown argument not passed
-                                status_string = 'No metadata found, use a forced rip instead';
+                                status_string = 'No metadata found, use a forced rip to ignore';
                                 exec_cb = false;
+                            } else if (fields[2].includes('giving up on track')) {
+                                status_string = fields[2] + ', use a forced rip to ignore';
                             }
                         }
 
                         svc_status.set_status(status_string, true);
+                        break;
+                    case 'WARNING':
+                        if (fields[1] == 'whipper.command.cd') {
+                            if (fields[2].includes('tracks have been skipped from this rip attempt')) {
+                                svc_status.set_status(fields[2], true);
+                            }
+                        }
                         break;
                     case 'INFO':
                         if (fields[1] == 'whipper.command.cd') {
@@ -1213,6 +1222,21 @@ function init() {
                 }
                 break;
         }
+    });
+
+    const spawn = require('child_process').spawn;
+    const child = spawn('./superdriveEnabler', ['/dev/cdrom']);
+
+    child.stdout.on('data', (data) => {
+        console.log('stdout: "' + data.toString().trim() + '"');
+    });
+
+    child.stderr.on('data', (data) => {
+        console.error('stderr: "' + data.toString().trim() + '"');
+    });
+
+    child.on('close', (code) => {
+        console.log('superdriveEnabler exited with code:', code);
     });
 
     roon.start_discovery();

@@ -1,0 +1,3 @@
+[submodule "whipper"]
+	path = whipper
+	url = https://github.com/whipper-team/whipper.git

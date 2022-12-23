@@ -2,3 +2,5 @@ node_modules
 output
 config.json
 staging.json
+.reg/bin
+.reg/etc
