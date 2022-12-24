@@ -1,4 +1,4 @@
-// Copyright 2019, 2020 The Appgineer
+// Copyright 2019 - 2022 The Appgineer
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ var smb_password = '';
 var roon = new RoonApi({
     extension_id:        'com.theappgineer.cd-ripper',
     display_name:        'CD Ripper',
-    display_version:     '0.6.0',
+    display_version:     '0.6.1',
     publisher:           'The Appgineer',
     email:               'theappgineer@gmail.com',
     website:             'https://community.roonlabs.com/t/roon-extension-cd-ripper/66590',
@@ -677,11 +677,12 @@ function rip(cb, force) {
 
                         if (metadata && fields[2].includes('parsing .cue file')) {
                             // INFO:whipper.image.cue:parsing .cue file
-                            const separator = fields[2].charAt(fields[2].length - 1);
+                            const remainder = fields.slice(2).join(':');
+                            const separator = remainder.charAt(remainder.length - 1);
 
                             // Get the relative output path from the INFO string
                             // It is needed because it has special characters replaced
-                            const path = fields[2].split(separator)[1].split('/');
+                            const path = remainder.split(separator)[1].split('/');
 
                             metadata.fs_artist = path[0];
                             metadata.fs_album = path[1];
@@ -952,6 +953,8 @@ function push_remote(staging_key, settings, cb) {
         const no_of_slashes_till_path_slice = 4;    // Including slash of path slice
         const share = share_fields.slice(0, no_of_slashes_till_path_slice).join('/');
         let command = `lcd "${output_dir}";`;
+        let log;
+        let remote_log;
 
         if (share_fields.length > no_of_slashes_till_path_slice) {
             const path = share_fields.slice(no_of_slashes_till_path_slice).join('/');
@@ -971,12 +974,18 @@ function push_remote(staging_key, settings, cb) {
                 album = staging[staging_key].Title;
             }
 
+            const remote_artist = artist.replace(/:/g, '');
+            const remote_album = album.replace(/:/g, '');
+
+            log = `${artist} - ${album}.log`;
+            remote_log = `${remote_artist} - ${remote_album}.log`;
+
             command += `lcd "${artist}/${album}";` +
-                       `mkdir "${artist}";cd "${artist}";` +
-                       `mkdir "${album}";cd "${album}";`;
+                       `mkdir "${remote_artist}";cd "${remote_artist}";` +
+                       `mkdir "${remote_album}";cd "${remote_album}";`;
         }
 
-        command += 'prompt;recurse;mput *.flac;mput *.log';
+        command += `prompt;recurse;mput *.flac;put "${log}" "${remote_log}"`;
         console.log(share, command);
 
         // Use '-E' option to get the expected stdout/stderr behavior
@@ -1213,7 +1222,7 @@ function init() {
                 if (rip_settings.autorip === undefined) {
                     rip_settings.autorip = false;
                     roon.save_config("settings", rip_settings);
-                } else if (rip_settings.autorip && is_configured) {
+                } else if (rip_settings.autorip && is_configured && current_action == ACTION_IDLE) {
                     current_action = ACTION_RIP_PUSH;
 
                     rip((staging_key) => {
